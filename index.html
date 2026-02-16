@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Shooter Simulator (No Velocity Compensation)</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            z-index: 100;
+            border: 1px solid #444;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: #ddd;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            border: 1px solid #444;
+            pointer-events: none;
+        }
+        .value {
+            color: #ffaa00;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>Shooter Simulator (No Velocity Compensation)</h2>
+        <p>Distance to goal: <span id="dist-display" class="value">0.0</span> in</p>
+        <p>Hood angle: <span id="angle-display" class="value">0.0°</span></p>
+        <p>Flywheel speed: <span id="speed-display" class="value">0.0</span> in/s</p>
+        <p>Time of flight: <span id="time-display" class="value">0.00</span> s</p>
+    </div>
+    <div id="controls">
+        <b>Controls:</b> WASD = move, Q/E = rotate robot, Space = shoot<br>
+        Turret auto‑aims at the goal (yellow ring).
+    </div>
+
+    <!-- Import Three.js and OrbitControls -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Constants from the original code ---
+        const G = 32.174 * 12;          // in/s²
+        const SCORE_HEIGHT = 26.0;       // inches (goal height above ground)
+        const SCORE_ANGLE = -30 * Math.PI/180; // radians
+        const PASS_THROUGH_RADIUS = 5.0; // inches
+        // Hood limits (assumed, adjust if needed)
+        const HOOD_MAX_ANGLE = 70 * Math.PI/180; // 70°
+        const HOOD_MIN_ANGLE = 10 * Math.PI/180; // 10°
+
+        // Goal position (fixed)
+        const GOAL_POS = new THREE.Vector3(200, 0, SCORE_HEIGHT); // x, y, z (z up)
+
+        // --- Setup scene, camera, renderer ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111122);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(250, 200, 250);
+        camera.lookAt(100, 0, 50);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(100, 0, 50);
+        controls.enableDamping = true;
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0x404060);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(100, 200, 200);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 1024;
+        dirLight.shadow.mapSize.height = 1024;
+        const d = 300;
+        dirLight.shadow.camera.left = -d;
+        dirLight.shadow.camera.right = d;
+        dirLight.shadow.camera.top = d;
+        dirLight.shadow.camera.bottom = -d;
+        dirLight.shadow.camera.near = 1;
+        dirLight.shadow.camera.far = 400;
+        scene.add(dirLight);
+
+        const fillLight = new THREE.PointLight(0x446688, 0.5);
+        fillLight.position.set(0, 100, 100);
+        scene.add(fillLight);
+
+        // --- Ground grid and axes ---
+        const gridHelper = new THREE.GridHelper(400, 20, 0x88aaff, 0x335588);
+        gridHelper.position.z = 0;
+        scene.add(gridHelper);
+
+        const axesHelper = new THREE.AxesHelper(100);
+        scene.add(axesHelper);
+
+        // --- Goal (a ring / basket) ---
+        const goalGroup = new THREE.Group();
+        // Rim
+        const rimGeo = new THREE.TorusGeometry(10, 1, 16, 32);
+        const rimMat = new THREE.MeshStandardMaterial({ color: 0xffaa00, emissive: 0x442200 });
+        const rim = new THREE.Mesh(rimGeo, rimMat);
+        rim.rotation.x = Math.PI/2; // lay flat
+        rim.position.z = 0;
+        goalGroup.add(rim);
+        // Support cylinder
+        const poleGeo = new THREE.CylinderGeometry(2, 2, SCORE_HEIGHT, 8);
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+        const pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.z = -SCORE_HEIGHT/2;
+        pole.position.y = 0;
+        goalGroup.add(pole);
+        // Base
+        const baseGeo = new THREE.BoxGeometry(20, 20, 2);
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+        const base = new THREE.Mesh(baseGeo, baseMat);
+        base.position.z = -SCORE_HEIGHT;
+        base.position.y = 0;
+        goalGroup.add(base);
+
+        goalGroup.position.copy(GOAL_POS);
+        scene.add(goalGroup);
+
+        // --- Robot ---
+        const robotGroup = new THREE.Group();
+        robotGroup.position.set(0, 0, 0); // start at origin
+
+        // Chassis (simple box)
+        const chassisGeo = new THREE.BoxGeometry(30, 30, 10);
+        const chassisMat = new THREE.MeshStandardMaterial({ color: 0x33aa33 });
+        const chassis = new THREE.Mesh(chassisGeo, chassisMat);
+        chassis.position.z = 5; // half height
+        chassis.castShadow = true;
+        chassis.receiveShadow = true;
+        robotGroup.add(chassis);
+
+        // Turret base (rotates in yaw)
+        const turretBaseGeo = new THREE.CylinderGeometry(8, 8, 5, 16);
+        const turretBaseMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+        const turretBase = new THREE.Mesh(turretBaseGeo, turretBaseMat);
+        turretBase.position.z = 10 + 2.5; // on top of chassis
+        turretBase.castShadow = true;
+        turretBase.receiveShadow = true;
+        robotGroup.add(turretBase);
+
+        // Turret group (yaw)
+        const turretGroup = new THREE.Group();
+        turretGroup.position.z = 10 + 5; // at top of base
+        robotGroup.add(turretGroup);
+
+        // Pitch group (holds the barrel)
+        const pitchGroup = new THREE.Group();
+        turretGroup.add(pitchGroup);
+
+        // Barrel (cylinder initially pointing up, will be rotated by pitch)
+        const barrelLength = 20;
+        const barrelGeo = new THREE.CylinderGeometry(2, 2, barrelLength, 8);
+        const barrelMat = new THREE.MeshStandardMaterial({ color: 0xcccccc });
+        const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+        // Rotate so that default orientation is along +Z (up)
+        barrel.rotation.x = -Math.PI/2; // from Y to Z
+        // Position so base is at origin and tip at +Z
+        barrel.position.z = barrelLength/2;
+        barrel.castShadow = true;
+        barrel.receiveShadow = true;
+        pitchGroup.add(barrel);
+
+        // Ball at the end of the barrel (visual only)
+        const ballRadius = 4;
+        const ballGeo = new THREE.SphereGeometry(ballRadius, 16, 16);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0xffaa00, emissive: 0x442200 });
+        const ballVisual = new THREE.Mesh(ballGeo, ballMat);
+        ballVisual.position.z = barrelLength; // at tip
+        ballVisual.castShadow = true;
+        ballVisual.receiveShadow = true;
+        pitchGroup.add(ballVisual);
+
+        scene.add(robotGroup);
+
+        // --- Projectile manager ---
+        const projectiles = [];
+        const maxProjectiles = 20;
+
+        function spawnProjectile(position, velocity) {
+            if (projectiles.length >= maxProjectiles) {
+                // remove oldest
+                const old = projectiles.shift();
+                scene.remove(old.mesh);
+            }
+            const geo = new THREE.SphereGeometry(ballRadius * 0.8, 12, 12);
+            const mat = new THREE.MeshStandardMaterial({ color: 0xff5500 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.copy(position);
+            mesh.castShadow = true;
+            scene.add(mesh);
+            projectiles.push({ mesh, velocity, age: 0 });
+        }
+
+        // --- Trajectory preview line ---
+        const trajectoryPoints = [];
+        const trajectoryLineGeo = new THREE.BufferGeometry();
+        const trajectoryLineMat = new THREE.LineBasicMaterial({ color: 0xffaa00 });
+        const trajectoryLine = new THREE.Line(trajectoryLineGeo, trajectoryLineMat);
+        scene.add(trajectoryLine);
+
+        // --- Input handling ---
+        const keyState = {
+            w: false, a: false, s: false, d: false,
+            q: false, e: false
+        };
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (key in keyState) {
+                keyState[key] = true;
+                e.preventDefault();
+            }
+            if (e.code === 'Space') {
+                e.preventDefault();
+                // Shoot!
+                const muzzlePos = getMuzzleWorldPosition();
+                const velocityDir = getMuzzleDirection();
+                const speed = currentFlywheelSpeed; // from last calculation
+                if (speed > 0 && currentHoodAngleValid) {
+                    const vel = velocityDir.multiplyScalar(speed);
+                    spawnProjectile(muzzlePos, vel);
+                }
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (key in keyState) {
+                keyState[key] = false;
+                e.preventDefault();
+            }
+        });
+
+        // Helper to get muzzle world position
+        function getMuzzleWorldPosition() {
+            const tipPos = new THREE.Vector3(0, 0, barrelLength);
+            return tipPos.clone().applyMatrix4(pitchGroup.matrixWorld);
+        }
+
+        function getMuzzleDirection() {
+            // direction is +Z in pitchGroup local, transformed to world
+            const dir = new THREE.Vector3(0, 0, 1);
+            return dir.transformDirection(pitchGroup.matrixWorld).normalize();
+        }
+
+        // --- Math functions ---
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        // Compute hood angle and flywheel speed given horizontal distance x (after subtracting radius)
+        // and vertical difference y.
+        function computeShotParameters(x, y) {
+            if (x <= 0) return { hoodAngle: null, speed: null };
+            
+            // Raw hood angle from formula: atan(2*y/x - tan(a))
+            let rawAngle = Math.atan(2 * y / x - Math.tan(SCORE_ANGLE));
+            let hoodAngle = clamp(rawAngle, HOOD_MIN_ANGLE, HOOD_MAX_ANGLE);
+            
+            // Compute speed
+            const cosH = Math.cos(hoodAngle);
+            const tanH = Math.tan(hoodAngle);
+            const denominator = 2 * cosH * cosH * (x * tanH - y);
+            if (denominator <= 0) return { hoodAngle: null, speed: null };
+            
+            const speed = Math.sqrt(G * x * x / denominator);
+            return { hoodAngle, speed };
+        }
+
+        // Current values (for display and shooting)
+        let currentHoodAngle = 0;
+        let currentFlywheelSpeed = 0;
+        let currentTimeOfFlight = 0;
+        let currentHoodAngleValid = false;
+
+        // --- Update loop ---
+        const clock = new THREE.Clock();
+
+        function update() {
+            const dt = clock.getDelta();
+            // Limit dt to avoid large jumps
+            const safeDt = Math.min(dt, 0.05);
+
+            // --- Robot movement ---
+            const moveSpeed = 80; // in/s
+            const rotateSpeed = 2; // rad/s
+            if (keyState.w) {
+                robotGroup.position.x += moveSpeed * safeDt * Math.cos(robotGroup.rotation.z);
+                robotGroup.position.y += moveSpeed * safeDt * Math.sin(robotGroup.rotation.z);
+            }
+            if (keyState.s) {
+                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(robotGroup.rotation.z);
+                robotGroup.position.y -= moveSpeed * safeDt * Math.sin(robotGroup.rotation.z);
+            }
+            if (keyState.a) {
+                robotGroup.position.x += moveSpeed * safeDt * Math.cos(robotGroup.rotation.z + Math.PI/2);
+                robotGroup.position.y += moveSpeed * safeDt * Math.sin(robotGroup.rotation.z + Math.PI/2);
+            }
+            if (keyState.d) {
+                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(robotGroup.rotation.z + Math.PI/2);
+                robotGroup.position.y -= moveSpeed * safeDt * Math.sin(robotGroup.rotation.z + Math.PI/2);
+            }
+            if (keyState.q) {
+                robotGroup.rotation.z += rotateSpeed * safeDt;
+            }
+            if (keyState.e) {
+                robotGroup.rotation.z -= rotateSpeed * safeDt;
+            }
+
+            // --- Auto-aim: point turret at goal ---
+            // Get robot position
+            const robotPos = robotGroup.position.clone();
+            // Vector from robot to goal in XY plane
+            const toGoal = new THREE.Vector3().subVectors(GOAL_POS, robotPos);
+            toGoal.z = 0; // ignore height for yaw
+            const targetYaw = Math.atan2(toGoal.y, toGoal.x);
+            // Robot's heading
+            const robotYaw = robotGroup.rotation.z;
+            // Local turret yaw (relative to robot)
+            let localYaw = targetYaw - robotYaw;
+            // Normalize
+            while (localYaw > Math.PI) localYaw -= 2*Math.PI;
+            while (localYaw < -Math.PI) localYaw += 2*Math.PI;
+            turretGroup.rotation.z = localYaw;
+
+            // --- Compute shot parameters based on current position ---
+            const muzzlePos = getMuzzleWorldPosition();
+            const dx = GOAL_POS.x - muzzlePos.x;
+            const dy = GOAL_POS.y - muzzlePos.y;
+            const horizDist = Math.sqrt(dx*dx + dy*dy);
+            const x = horizDist - PASS_THROUGH_RADIUS;
+            const y = GOAL_POS.z - muzzlePos.z; // vertical difference
+
+            let hoodAngle, speed;
+            const params = computeShotParameters(x, y);
+            if (params.hoodAngle !== null && params.speed !== null) {
+                hoodAngle = params.hoodAngle;
+                speed = params.speed;
+                currentHoodAngleValid = true;
+                currentHoodAngle = hoodAngle;
+                currentFlywheelSpeed = speed;
+
+                // Compute time of flight (horizontal distance / horizontal speed)
+                const vHoriz = speed * Math.cos(hoodAngle);
+                currentTimeOfFlight = x / vHoriz;
+
+                // Set turret pitch (0 = up, 90 = horizontal)
+                // hoodAngle is from horizontal, so pitch = 90° - hoodAngle
+                pitchGroup.rotation.y = Math.PI/2 - hoodAngle; // positive pitch rotates towards +X
+            } else {
+                currentHoodAngleValid = false;
+                // fallback pitch
+                pitchGroup.rotation.y = Math.PI/4; // 45°
+            }
+
+            // Update UI
+            document.getElementById('dist-display').innerText = horizDist.toFixed(1);
+            if (currentHoodAngleValid) {
+                document.getElementById('angle-display').innerText = (hoodAngle * 180/Math.PI).toFixed(1);
+                document.getElementById('speed-display').innerText = speed.toFixed(0);
+                document.getElementById('time-display').innerText = currentTimeOfFlight.toFixed(2);
+            } else {
+                document.getElementById('angle-display').innerText = 'N/A';
+                document.getElementById('speed-display').innerText = 'N/A';
+                document.getElementById('time-display').innerText = 'N/A';
+            }
+
+            // --- Draw predicted trajectory if valid ---
+            if (currentHoodAngleValid) {
+                const steps = 50;
+                const points = [];
+                const dtTraj = currentTimeOfFlight / steps;
+                const v0 = speed;
+                const theta = hoodAngle;
+                const vx0 = v0 * Math.cos(theta);
+                const vz0 = v0 * Math.sin(theta);
+                // Launch position
+                const pos0 = muzzlePos.clone();
+                for (let i = 0; i <= steps; i++) {
+                    const t = i * dtTraj;
+                    const xPos = pos0.x + vx0 * t * Math.cos(localYaw + robotYaw); // need horizontal direction
+                    const yPos = pos0.y + vx0 * t * Math.sin(localYaw + robotYaw);
+                    const zPos = pos0.z + vz0 * t - 0.5 * G * t * t;
+                    points.push(new THREE.Vector3(xPos, yPos, zPos));
+                }
+                trajectoryLine.geometry.dispose();
+                trajectoryLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+            } else {
+                trajectoryLine.geometry.dispose();
+                trajectoryLine.geometry = new THREE.BufferGeometry();
+            }
+
+            // --- Update projectiles ---
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i];
+                // Simple Euler integration
+                p.velocity.z -= G * safeDt;
+                p.mesh.position.x += p.velocity.x * safeDt;
+                p.mesh.position.y += p.velocity.y * safeDt;
+                p.mesh.position.z += p.velocity.z * safeDt;
+                p.age += safeDt;
+
+                // Remove if below ground or too far
+                if (p.mesh.position.z < -10 || p.age > 10) {
+                    scene.remove(p.mesh);
+                    projectiles.splice(i, 1);
+                }
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+            requestAnimationFrame(update);
+        }
+
+        update();
+
+        // --- Resize handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Add some floating markers for reference ---
+        const markerMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+        const markerPositions = [
+            [100, 100, 0], [100, -100, 0], [-100, 100, 0], [-100, -100, 0]
+        ];
+        markerPositions.forEach(pos => {
+            const marker = new THREE.Mesh(new THREE.SphereGeometry(3, 8), markerMat);
+            marker.position.set(pos[0], pos[1], pos[2]);
+            scene.add(marker);
+        });
+    </script>
+</body>
+</html>
