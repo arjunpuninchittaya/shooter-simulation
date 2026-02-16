@@ -316,22 +316,22 @@
             // --- Robot movement (Y-up): heading is rotation.y, move in X/Z plane ---
             const moveSpeed = 80; // in/s
             const rotateSpeed = 2; // rad/s
-            const robotYaw = robotGroup.rotation.y;
+            const moveYaw = robotGroup.rotation.y;
             if (keyState.w) {
-                robotGroup.position.x += moveSpeed * safeDt * Math.cos(robotYaw);
-                robotGroup.position.z += moveSpeed * safeDt * Math.sin(robotYaw);
+                robotGroup.position.x += moveSpeed * safeDt * Math.cos(moveYaw);
+                robotGroup.position.z += moveSpeed * safeDt * Math.sin(moveYaw);
             }
             if (keyState.s) {
-                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(robotYaw);
-                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(robotYaw);
+                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(moveYaw);
+                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(moveYaw);
             }
             if (keyState.a) {
-                robotGroup.position.x += moveSpeed * safeDt * Math.cos(robotYaw + Math.PI/2);
-                robotGroup.position.z += moveSpeed * safeDt * Math.sin(robotYaw + Math.PI/2);
+                robotGroup.position.x += moveSpeed * safeDt * Math.cos(moveYaw + Math.PI/2);
+                robotGroup.position.z += moveSpeed * safeDt * Math.sin(moveYaw + Math.PI/2);
             }
             if (keyState.d) {
-                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(robotYaw + Math.PI/2);
-                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(robotYaw + Math.PI/2);
+                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(moveYaw + Math.PI/2);
+                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(moveYaw + Math.PI/2);
             }
             if (keyState.arrowLeft) {
                 robotGroup.rotation.y += rotateSpeed * safeDt;
