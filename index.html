@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Shooter Simulator (No Velocity Compensation)</title>
+    <title>3D Shooter Simulator (With Velocity Compensation)</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
         #info {
@@ -41,7 +41,9 @@
         <h2>Shooter Simulator (No Velocity Compensation)</h2>
         <p>Distance to goal: <span id="dist-display" class="value">0.0</span> in</p>
         <p>Hood angle: <span id="angle-display" class="value">0.0°</span></p>
+        <p>Hood value: <span id="hood-display" class="value">0.0</span></p>
         <p>Flywheel speed: <span id="speed-display" class="value">0.0</span> in/s</p>
+        <p>RPM: <span id="rpm-display" class="value">0.0</span></p>
         <p>Time of flight: <span id="time-display" class="value">0.00</span> s</p>
         <p>Robot velocity: <span id="vel-display" class="value">0.0</span> in/s</p>
     </div>
@@ -66,8 +68,8 @@
 
         // --- Constants from the original code ---
         const G = 32.174 * 12;          // in/s²
-        const SCORE_HEIGHT = 26.0;       // inches (goal height above ground)
-        const SCORE_ANGLE = -30 * Math.PI/180; // radians
+        const SCORE_HEIGHT = 46.0;       // inches (goal height above ground)
+        const SCORE_ANGLE = -20 * Math.PI/180; // radians
         const PASS_THROUGH_RADIUS = 5.0; // inches
         // Hood limits (assumed, adjust if needed)
         const HOOD_MAX_ANGLE = 70 * Math.PI/180; // 70°
@@ -135,7 +137,7 @@
 
         // --- Goal (a box target) ---
         const goalMat = new THREE.MeshStandardMaterial({ color: 0xffaa00 });
-        const goalGeo = new THREE.BoxGeometry(16, 16, 4); // width, height, depth
+        const goalGeo = new THREE.BoxGeometry(16, 20, 16); // width, height, depth
         const goalMesh = new THREE.Mesh(goalGeo, goalMat);
         goalMesh.castShadow = true;
         goalMesh.receiveShadow = true;
@@ -146,8 +148,8 @@
         const robotGroup = new THREE.Group();
         robotGroup.position.set(0, 0, 0); // start at origin (y is up)
 
-        // Chassis (simple box)
-        const chassisGeo = new THREE.BoxGeometry(30, 30, 10);
+        // Chassis (simple box) - width, height, depth (height should be small)
+        const chassisGeo = new THREE.BoxGeometry(30, 10, 30);
         const chassisMat = new THREE.MeshStandardMaterial({ color: 0x33aa33 });
         const chassis = new THREE.Mesh(chassisGeo, chassisMat);
         chassis.position.y = 5; // half height (y up)
@@ -180,6 +182,7 @@
         const barrel = new THREE.Mesh(barrelGeo, barrelMat);
         // rotate cylinder (default along Y) to point along +X
         barrel.rotation.z = Math.PI/2;
+        console.log(barrel.rotation);
         // Position so base is at origin and tip at +X
         barrel.position.x = barrelLength/2;
         barrel.castShadow = true;
@@ -229,6 +232,16 @@
             w: false, a: false, s: false, d: false,
             arrowLeft: false, arrowRight: false
         };
+        
+        // Robot movement state (acceleration and velocity)
+        let accelX = 0;  // acceleration in world X
+        let accelZ = 0;  // acceleration in world Z
+        let velocityX = 0;  // velocity in world X
+        let velocityZ = 0;  // velocity in world Z
+        const maxVelocity = 80;  // in/s
+        const accelerationRate = 150;  // in/s² (how fast keys add acceleration)
+        const friction = 0.92;  // friction coefficient (0-1, closer to 1 = less friction)
+        
         window.addEventListener('keydown', (e) => {
             const key = e.key;
             if (key === 'w' || key === 'W') { keyState.w = true; e.preventDefault(); }
@@ -244,7 +257,7 @@
                 const velocityDir = getMuzzleDirection();
                 const speed = currentFlywheelSpeed; // from last calculation
                 if (speed > 0 && currentHoodAngleValid) {
-                    const vel = velocityDir.multiplyScalar(speed);
+                    const vel = velocityDir.multiplyScalar(speed).add(robotVel); // add robot velocity (world)
                     spawnProjectile(muzzlePos, vel);
                 }
             }
@@ -276,6 +289,23 @@
             return Math.min(max, Math.max(min, value));
         }
 
+        // Conversion functions from ShooterConverter
+        function getAngleFromHood(hood) {
+            return hood * 43.42315 - 0.491943;
+        }
+
+        function getHoodFromAngle(angle) {
+            return (angle + 0.491943) / 43.42315;
+        }
+
+        function getVelocityFromRPM(rpm) {
+            return 0.0407204 * rpm + 63.81966;
+        }
+
+        function getRPMFromVelocity(velocity) {
+            return (velocity - 63.81966) / 0.0407204;
+        }
+
         // Compute hood angle and flywheel speed given horizontal distance x (after subtracting radius)
         // and vertical difference y.
         function computeShotParameters(x, y) {
@@ -293,6 +323,89 @@
             
             const speed = Math.sqrt(G * x * x / denominator);
             return { hoodAngle, speed };
+        }
+
+        // Compute shot parameters with velocity compensation
+        // Based on the proper physics from the Java shooter code
+        function computeShotParametersWithVelocity(dx, dz, y, robotVelX, robotVelZ) {
+            // dx, dz: vector from muzzle to goal (in world coordinates)
+            // y: vertical distance to goal
+            // robotVelX, robotVelZ: robot's velocity in world coordinates
+            
+            const horizDist = Math.sqrt(dx * dx + dz * dz);
+            const x = horizDist - PASS_THROUGH_RADIUS;
+            
+            if (x <= 0) return { hoodAngle: null, speed: null, turretYawOffset: 0 };
+            
+            // Step 1: Calculate initial launch components
+            let hoodAngle = clamp(
+                Math.atan(2 * y / x - Math.tan(SCORE_ANGLE)),
+                HOOD_MIN_ANGLE,
+                HOOD_MAX_ANGLE
+            );
+            
+            let flywheelSpeed = Math.sqrt(
+                G * x * x /
+                (2 * Math.pow(Math.cos(hoodAngle), 2) *
+                (x * Math.tan(hoodAngle) - y))
+            );
+            
+            // Step 2: Decompose robot velocity into parallel and perpendicular components
+            // relative to the robot-to-goal vector
+            const robotVelMag = Math.sqrt(robotVelX * robotVelX + robotVelZ * robotVelZ);
+            
+            if (robotVelMag < 0.01) {
+                // No robot velocity, return initial parameters
+                return { hoodAngle, speed: flywheelSpeed, turretYawOffset: 0 };
+            }
+            
+            // Direction from muzzle to goal
+            const shotDirX = dx / horizDist;
+            const shotDirZ = dz / horizDist;
+            
+            // Robot velocity direction
+            const robotVelDirX = robotVelX / robotVelMag;
+            const robotVelDirZ = robotVelZ / robotVelMag;
+            
+            // Angle between robot velocity and shot direction
+            const coordinateTheta = Math.atan2(robotVelZ, robotVelX) - Math.atan2(dz, dx);
+            
+            // Parallel component (negative = moving away from goal)
+            const parallelComponent = -Math.cos(coordinateTheta) * robotVelMag;
+            
+            // Perpendicular component
+            const perpendicularComponent = Math.sin(coordinateTheta) * robotVelMag;
+            
+            // Step 3: Calculate velocity compensation
+            const vz = flywheelSpeed * Math.sin(hoodAngle); // vertical component of launch velocity
+            const time = x / (flywheelSpeed * Math.cos(hoodAngle)); // time of flight
+            
+            // Ideal velocity requirement to hit the adjusted target
+            const ivr = x / time + parallelComponent;
+            
+            // New velocity requirement accounting for perpendicular motion
+            const nvr = Math.sqrt(ivr * ivr + perpendicularComponent * perpendicularComponent);
+            
+            // New distance requirement
+            const ndr = nvr * time;
+            
+            // Step 4: Recalculate launch components with compensated values
+            hoodAngle = clamp(
+                Math.atan(vz / nvr),
+                HOOD_MIN_ANGLE,
+                HOOD_MAX_ANGLE
+            );
+            
+            flywheelSpeed = Math.sqrt(
+                G * ndr * ndr /
+                (2 * Math.pow(Math.cos(hoodAngle), 2) *
+                (ndr * Math.tan(hoodAngle) - y))
+            );
+            
+            // Step 5: Calculate turret yaw offset for perpendicular velocity compensation
+            const turretYawOffset = Math.atan2(perpendicularComponent, ivr);
+            
+            return { hoodAngle, speed: flywheelSpeed, turretYawOffset };
         }
 
         // Current values (for display and shooting)
@@ -313,32 +426,38 @@
             // Limit dt to avoid large jumps
             const safeDt = Math.min(dt, 0.05);
 
-            // --- Robot movement (Y-up): heading is rotation.y, move in X/Z plane ---
-            const moveSpeed = 80; // in/s
+            // --- Robot movement (field-centric): inputs map to world axes X/Z ---
+            // Input adds to acceleration
+            accelX = 0;
+            accelZ = 0;
+            if (keyState.w) accelX += accelerationRate;
+            if (keyState.s) accelX -= accelerationRate;
+            if (keyState.a) accelZ -= accelerationRate;
+            if (keyState.d) accelZ += accelerationRate;
+            
+            // Apply friction to velocity
+            velocityX *= friction;
+            velocityZ *= friction;
+            
+            // Update velocity based on acceleration
+            velocityX += accelX * safeDt;
+            velocityZ += accelZ * safeDt;
+            
+            // Clamp velocity to max
+            const speedLength = Math.sqrt(velocityX * velocityX + velocityZ * velocityZ);
+            if (speedLength > maxVelocity) {
+                const scale = maxVelocity / speedLength;
+                velocityX *= scale;
+                velocityZ *= scale;
+            }
+            
+            // Update position based on velocity
+            robotGroup.position.x += velocityX * safeDt;
+            robotGroup.position.z += velocityZ * safeDt;
+            // Rotation still via arrow keys (rotates robot about Y)
             const rotateSpeed = 2; // rad/s
-            const moveYaw = robotGroup.rotation.y;
-            if (keyState.w) {
-                robotGroup.position.x += moveSpeed * safeDt * Math.cos(moveYaw);
-                robotGroup.position.z += moveSpeed * safeDt * Math.sin(moveYaw);
-            }
-            if (keyState.s) {
-                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(moveYaw);
-                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(moveYaw);
-            }
-            if (keyState.a) {
-                robotGroup.position.x += moveSpeed * safeDt * Math.cos(moveYaw + Math.PI/2);
-                robotGroup.position.z += moveSpeed * safeDt * Math.sin(moveYaw + Math.PI/2);
-            }
-            if (keyState.d) {
-                robotGroup.position.x -= moveSpeed * safeDt * Math.cos(moveYaw + Math.PI/2);
-                robotGroup.position.z -= moveSpeed * safeDt * Math.sin(moveYaw + Math.PI/2);
-            }
-            if (keyState.arrowLeft) {
-                robotGroup.rotation.y += rotateSpeed * safeDt;
-            }
-            if (keyState.arrowRight) {
-                robotGroup.rotation.y -= rotateSpeed * safeDt;
-            }
+            if (keyState.arrowLeft) robotGroup.rotation.y += rotateSpeed * safeDt;
+            if (keyState.arrowRight) robotGroup.rotation.y -= rotateSpeed * safeDt;
 
             // --- Auto-aim: point turret at goal ---
             // Get robot position
@@ -354,18 +473,20 @@
             // Normalize
             while (localYaw > Math.PI) localYaw -= 2*Math.PI;
             while (localYaw < -Math.PI) localYaw += 2*Math.PI;
-            turretGroup.rotation.y = localYaw;
+            
+            // Will be updated with velocity compensation offset below
+            let turretYawWithCompensation = -localYaw;
 
             // --- Compute shot parameters based on current position ---
             const muzzlePos = getMuzzleWorldPosition();
-            const dx = GOAL_POS.x - muzzlePos.x;
+            const dx = GOAL_POS.x - muzzlePos.x + 8;
             const dz = GOAL_POS.z - muzzlePos.z;
             const horizDist = Math.sqrt(dx*dx + dz*dz);
             const x = horizDist - PASS_THROUGH_RADIUS;
             const y = GOAL_POS.y - muzzlePos.y; // vertical difference (y up)
 
             let hoodAngle, speed;
-            const params = computeShotParameters(x, y);
+            const params = computeShotParametersWithVelocity(dx, dz, y, velocityX, velocityZ);
             if (params.hoodAngle !== null && params.speed !== null) {
                 hoodAngle = params.hoodAngle;
                 speed = params.speed;
@@ -378,23 +499,37 @@
                 currentTimeOfFlight = x / vHoriz;
 
                 // Set turret pitch: barrel points along +X locally; pitch by rotating around local Z
-                // hoodAngle is measured above horizontal, so rotate negative about Z
-                pitchGroup.rotation.z = -hoodAngle;
+                // hoodAngle is measured above horizontal, so rotate positive about Z
+                pitchGroup.rotation.z = hoodAngle;
+                
+                // Apply turret yaw offset for velocity compensation
+                turretYawWithCompensation = -localYaw + params.turretYawOffset;
             } else {
                 currentHoodAngleValid = false;
                 // fallback pitch
                 pitchGroup.rotation.z = 0.3; // small default-up
             }
+            
+            // Apply the turret yaw (with or without velocity compensation)
+            turretGroup.rotation.y = turretYawWithCompensation;
 
             // Update UI
             document.getElementById('dist-display').innerText = horizDist.toFixed(1);
             if (currentHoodAngleValid) {
-                document.getElementById('angle-display').innerText = (hoodAngle * 180/Math.PI).toFixed(1);
+                const angleDegrees = hoodAngle * 180/Math.PI;
+                const hoodValue = getHoodFromAngle(angleDegrees);
+                const rpm = getRPMFromVelocity(speed);
+                
+                document.getElementById('angle-display').innerText = angleDegrees.toFixed(1);
+                document.getElementById('hood-display').innerText = hoodValue.toFixed(4);
                 document.getElementById('speed-display').innerText = speed.toFixed(0);
+                document.getElementById('rpm-display').innerText = rpm.toFixed(0);
                 document.getElementById('time-display').innerText = currentTimeOfFlight.toFixed(2);
             } else {
                 document.getElementById('angle-display').innerText = 'N/A';
+                document.getElementById('hood-display').innerText = 'N/A';
                 document.getElementById('speed-display').innerText = 'N/A';
+                document.getElementById('rpm-display').innerText = 'N/A';
                 document.getElementById('time-display').innerText = 'N/A';
             }
 
@@ -409,17 +544,21 @@
                 const points = [];
                 const dtTraj = currentTimeOfFlight / steps;
                 const v0 = speed;
-                const theta = hoodAngle;
-                const vx0 = v0 * Math.cos(theta);
-                const vy0 = v0 * Math.sin(theta); // vertical component (y)
+                
                 // Launch position
                 const pos0 = muzzlePos.clone();
-                const horizAngle = robotYaw + localYaw;
+                
+                // Get the actual barrel direction in world space
+                const barrelDir = getMuzzleDirection();
+                
+                // Initial velocity in world space (barrel direction * speed + robot velocity)
+                const initialVel = barrelDir.clone().multiplyScalar(v0).add(new THREE.Vector3(velocityX, 0, velocityZ));
+                
                 for (let i = 0; i <= steps; i++) {
                     const t = i * dtTraj;
-                    const xPos = pos0.x + vx0 * t * Math.cos(horizAngle);
-                    const zPos = pos0.z + vx0 * t * Math.sin(horizAngle);
-                    const yPos = pos0.y + vy0 * t - 0.5 * G * t * t;
+                    const xPos = pos0.x + initialVel.x * t;
+                    const zPos = pos0.z + initialVel.z * t;
+                    const yPos = pos0.y + initialVel.y * t - 0.5 * G * t * t;
                     points.push(new THREE.Vector3(xPos, yPos, zPos));
                 }
                 trajectoryLine.geometry.dispose();
